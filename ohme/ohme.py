@@ -1,11 +1,14 @@
 """Ohme API library."""
+from __future__ import annotations
 
 import logging
 import asyncio
+import async_timeout
 import json
+import base64
 from time import time
 from enum import Enum
-from typing import Any, Optional, Self, Mapping
+from typing import Any, Optional, Mapping
 from dataclasses import dataclass
 import datetime
 import aiohttp
@@ -95,7 +98,7 @@ class OhmeApiClient:
             self._session = aiohttp.ClientSession()
             self._close_session = True
 
-        async with asyncio.timeout(self._timeout):
+        async with async_timeout.timeout(self._timeout):
             async with self._session.post(
                 f"https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key={GOOGLE_API_KEY}",
                 data={
@@ -127,7 +130,7 @@ class OhmeApiClient:
             self._session = aiohttp.ClientSession()
             self._close_session = True
 
-        async with asyncio.timeout(self._timeout):
+        async with async_timeout.timeout(self._timeout):
             async with self._session.post(
                 f"https://securetoken.googleapis.com/v1/token?key={GOOGLE_API_KEY}",
                 data={
@@ -171,7 +174,7 @@ class OhmeApiClient:
             self._session = aiohttp.ClientSession()
             self._close_session = True
 
-        async with asyncio.timeout(self._timeout):
+        async with async_timeout.timeout(self._timeout):
             async with self._session.request(
                 method=method,
                 url=f"https://api.ohme.io{url}",
@@ -583,6 +586,41 @@ class OhmeApiClient:
         resp = await self._make_request("GET", "/v1/chargeSessions/nextSessionInfo")
         self._next_session = resp.get("rule", {})
 
+    async def async_get_charge_summary(
+        self,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        granularity: str = "DAY",
+    ) -> dict[str, Any]:
+        """
+        Fetch charge sessions summary endpoint.
+        
+        :param start_ts: Unix timestamp in milliseconds for start of summary. Defaults to 24 hours ago.
+        :param end_ts: Unix timestamp in milliseconds for end of summary. Defaults to now.
+        :param granularity: Granularity of the summary data. Can be "DAY" or "HOUR".
+        """
+        if end_ts is None:
+            end_ts = int(time() * 1000)
+            
+        if start_ts is None:
+            start_ts = end_ts - (24 * 60 * 60 * 1000)
+
+        if not self._token:
+            await self._async_refresh_session()
+            
+        if not self._token:
+            raise AuthException("Not authenticated")
+
+        payload = self._token.split(".")[1]
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        user_id = json.loads(base64.b64decode(payload)).get("user_id")
+
+        if not user_id:
+            raise ApiException("Could not determine user ID from API token")
+
+        url = f"/v1/chargeSessions/summary/users/{user_id}?endTs={end_ts}&granularity={granularity}&startTs={start_ts}"
+        return await self._make_request("GET", url)
+
     async def async_update_device_info(self) -> bool:
         """Update _device_info with our charger model."""
         resp = await self._make_request("GET", "/v1/users/me/account")
@@ -619,7 +657,7 @@ class OhmeApiClient:
         if self._session and self._close_session:
             await self._session.close()
 
-    async def __aenter__(self) -> Self:
+    async def __aenter__(self) -> "OhmeApiClient":
         """Async enter."""
         return self
 
